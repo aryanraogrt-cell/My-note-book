@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html lang="hi">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>My Notebook</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Caveat:wght@600;700&family=Inter:wght@400;500;600&display=swap">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+<style>
+  :root {
+    --bg: #F2EFE5;
+    --ink: #26241C;
+    --line: #DEDAC9;
+    --accent: #2E3A59;
+    --red: #E23D28;
+    --muted: #7A7568;
+    --active-bg: #E4E0D0;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #22201A;
+      --ink: #ECE8DC;
+      --line: #3A362B;
+      --accent: #8FA6D8;
+      --red: #FF6B52;
+      --muted: #A29C89;
+      --active-bg: #34301F;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #22201A;
+    --ink: #ECE8DC;
+    --line: #3A362B;
+    --accent: #8FA6D8;
+    --red: #FF6B52;
+    --muted: #A29C89;
+    --active-bg: #34301F;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; padding: 0; overscroll-behavior: none; background: var(--bg); }
+  #root { height: 100dvh; }
+  .nb-btn { transition: background 0.15s ease, color 0.15s ease; cursor: pointer; touch-action: manipulation; }
+  .nb-note-item:active { background: var(--active-bg); }
+  .nb-editor::placeholder { color: var(--muted); opacity: 0.7; }
+  .nb-editor { caret-color: var(--ink); }
+  .nb-overlay {
+    position: fixed; inset: 0; background: rgba(20,18,10,0.35);
+    opacity: 0; pointer-events: none; transition: opacity 0.2s ease; z-index: 20;
+  }
+  .nb-overlay.open { opacity: 1; pointer-events: auto; }
+  .nb-drawer {
+    position: fixed; top: 0; bottom: 0; left: 0;
+    width: min(80vw, 300px);
+    transform: translateX(-100%);
+    transition: transform 0.22s ease;
+    z-index: 21;
+  }
+  .nb-drawer.open { transform: translateX(0); }
+  @media (min-width: 720px) {
+    .nb-drawer { position: static; transform: none; width: 240px; z-index: auto; }
+    .nb-overlay { display: none; }
+    .nb-hamburger { display: none; }
+  }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect, useRef, useCallback } = React;
+
+const STORAGE_KEY = 'notebook-data-v1';
+
+function uid() {
+  return Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+}
+
+function escapeHtml(str) {
+  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function escapeRegExp(str) {
+  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function buildHighlightedHtml(text, query, activeIndex) {
+  const safe = escapeHtml(text) + '\n';
+  if (!query.trim()) return { html: safe, matchCount: 0 };
+  const re = new RegExp(escapeRegExp(query), 'gi');
+  let count = 0;
+  const html = safe.replace(re, (match) => {
+    const isActive = count === activeIndex;
+    count += 1;
+    const style = isActive
+      ? 'background:var(--red);color:#fff;border-radius:2px;'
+      : 'background:transparent;color:var(--red);font-weight:700;';
+    return `<mark data-idx="${count - 1}" style="${style}">${match}</mark>`;
+  });
+  return { html, matchCount: count };
+}
+
+function loadData() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (raw) return JSON.parse(raw);
+  } catch (e) {}
+  return null;
+}
+
+function saveData(data) {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+  } catch (e) {}
+}
+
+function Notebook() {
+  const [data, setData] = useState(() => loadData() || {
+    notes: [{ id: uid(), title: 'Pehla Panna', content: '', updatedAt: Date.now() }],
+  });
+  const [activeId, setActiveId] = useState(() => data.notes[0] ? data.notes[0].id : null);
+  const [query, setQuery] = useState('');
+  const [showSearch, setShowSearch] = useState(false);
+  const [activeMatch, setActiveMatch] = useState(0);
+  const [drawerOpen, setDrawerOpen] = useState(false);
+
+  const textareaRef = useRef(null);
+  const backdropRef = useRef(null);
+
+  const persist = useCallback((next) => {
+    setData(next);
+    saveData(next);
+  }, []);
+
+  useEffect(() => { setActiveMatch(0); }, [query, activeId]);
+
+  const activeNote = data.notes.find((n) => n.id === activeId) || data.notes[0] || null;
+  const { html, matchCount } = buildHighlightedHtml(activeNote ? activeNote.content : '', query, activeMatch);
+
+  const syncScroll = () => {
+    if (backdropRef.current && textareaRef.current) {
+      backdropRef.current.scrollTop = textareaRef.current.scrollTop;
+      backdropRef.current.scrollLeft = textareaRef.current.scrollLeft;
+    }
+  };
+
+  const jumpToMatch = (index) => {
+    if (matchCount === 0) return;
+    const wrapped = ((index % matchCount) + matchCount) % matchCount;
+    setActiveMatch(wrapped);
+    requestAnimationFrame(() => {
+      const el = backdropRef.current && backdropRef.current.querySelector(`mark[data-idx="${wrapped}"]`);
+      if (el && textareaRef.current) {
+        const targetTop = el.offsetTop - textareaRef.current.clientHeight / 2;
+        textareaRef.current.scrollTop = Math.max(0, targetTop);
+        syncScroll();
+      }
+    });
+  };
+
+  useEffect(() => {
+    if (query.trim() && matchCount > 0) jumpToMatch(0);
+    // eslint-disable-next-line
+  }, [query, activeId]);
+
+  if (!activeNote) {
+    return (
+      <div style={s.emptyState}>
+        <p>Koi panna nahi hai.</p>
+        <button className="nb-btn" style={s.newNoteBtn} onClick={addNote}>+ Naya panna</button>
+      </div>
+    );
+  }
+
+  function updateActiveNote(patch) {
+    const next = { ...data, notes: data.notes.map((n) => (n.id === activeNote.id ? { ...n, ...patch, updatedAt: Date.now() } : n)) };
+    persist(next);
+  }
+
+  function addNote() {
+    const note = { id: uid(), title: 'Naya Panna', content: '', updatedAt: Date.now() };
+    persist({ ...data, notes: [note, ...data.notes] });
+    setActiveId(note.id);
+    setQuery('');
+    setShowSearch(false);
+    setDrawerOpen(false);
+  }
+
+  function deleteNote(id) {
+    const remaining = data.notes.filter((n) => n.id !== id);
+    persist({ ...data, notes: remaining });
+    if (activeId === id) setActiveId(remaining.length ? remaining[0].id : null);
+  }
+
+  return (
+    <div style={s.page}>
+      <div className={`nb-overlay${drawerOpen ? ' open' : ''}`} onClick={() => setDrawerOpen(false)} />
+
+      <aside className={`nb-drawer${drawerOpen ? ' open' : ''}`} style={s.sidebar}>
+        <div style={s.brand}>
+          <span style={{ fontSize: 20 }}>📚</span>
+          <span style={s.brandText}>My Notebook</span>
+        </div>
+        <button onClick={addNote} style={s.newNoteBtn} className="nb-btn">+ Naya panna</button>
+        <div style={s.noteList}>
+          {data.notes.map((n) => (
+            <div
+              key={n.id}
+              onClick={() => { setActiveId(n.id); setQuery(''); setShowSearch(false); setDrawerOpen(false); }}
+              style={{ ...s.noteItem, ...(n.id === activeId ? s.noteItemActive : {}) }}
+              className="nb-note-item nb-btn"
+            >
+              <span style={s.noteItemTitle}>{n.title || 'Bina naam'}</span>
+              <button onClick={(e) => { e.stopPropagation(); deleteNote(n.id); }} style={s.iconGhostBtn} className="nb-btn">
+                🗑
+              </button>
+            </div>
+          ))}
+        </div>
+      </aside>
+
+      <main style={s.main}>
+        <div style={s.topBar}>
+          <div style={s.topBarRow}>
+            <button className="nb-btn nb-hamburger" onClick={() => setDrawerOpen(true)} style={s.iconGhostBtnBig}>☰</button>
+            <input
+              value={activeNote.title}
+              onChange={(e) => updateActiveNote({ title: e.target.value })}
+              placeholder="Panne ka naam"
+              style={s.titleInput}
+            />
+            {!showSearch && (
+              <button onClick={() => setShowSearch(true)} style={s.iconGhostBtnBig} className="nb-btn">🔍</button>
+            )}
+          </div>
+          {showSearch && (
+            <div style={s.searchBar}>
+              <span>🔍</span>
+              <input
+                autoFocus
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') jumpToMatch(activeMatch + (e.shiftKey ? -1 : 1));
+                  if (e.key === 'Escape') { setShowSearch(false); setQuery(''); }
+                }}
+                placeholder="Koi shabd khojein…"
+                style={s.searchInput}
+              />
+              <span style={s.matchCount}>{query.trim() ? (matchCount ? `${activeMatch + 1}/${matchCount}` : '0') : ''}</span>
+              <button onClick={() => jumpToMatch(activeMatch - 1)} style={s.iconGhostBtn} className="nb-btn">▲</button>
+              <button onClick={() => jumpToMatch(activeMatch + 1)} style={s.iconGhostBtn} className="nb-btn">▼</button>
+              <button onClick={() => { setShowSearch(false); setQuery(''); }} style={s.iconGhostBtn} className="nb-btn">✕</button>
+            </div>
+          )}
+        </div>
+
+        <div style={s.editorWrap}>
+          <div ref={backdropRef} style={s.backdrop} dangerouslySetInnerHTML={{ __html: html }} />
+          <textarea
+            ref={textareaRef}
+            className="nb-editor"
+            value={activeNote.content}
+            onChange={(e) => updateActiveNote({ content: e.target.value })}
+            onScroll={syncScroll}
+            placeholder="Yahan likhna shuru karein…"
+            style={s.editor}
+            spellCheck={false}
+          />
+        </div>
+      </main>
+    </div>
+  );
+}
+
+const LINE_HEIGHT = 26;
+const sharedTextStyle = {
+  fontFamily: "'Inter', sans-serif",
+  fontSize: 16,
+  lineHeight: `${LINE_HEIGHT}px`,
+  padding: '16px 18px',
+  whiteSpace: 'pre-wrap',
+  wordBreak: 'break-word',
+  margin: 0,
+};
+
+const s = {
+  page: { height: '100dvh', background: 'var(--bg)', fontFamily: "'Inter', sans-serif", color: 'var(--ink)', display: 'flex', overflow: 'hidden' },
+  sidebar: { background: 'var(--bg)', borderRight: '1px solid var(--line)', display: 'flex', flexDirection: 'column', padding: '18px 12px', height: '100dvh', flexShrink: 0 },
+  brand: { display: 'flex', alignItems: 'center', gap: 8, padding: '0 6px 16px' },
+  brandText: { fontFamily: "'Caveat', cursive", fontWeight: 700, fontSize: 22, color: 'var(--accent)' },
+  newNoteBtn: { display: 'flex', alignItems: 'center', gap: 6, justifyContent: 'center', background: 'var(--accent)', color: '#fff', border: 'none', borderRadius: 8, padding: '11px 10px', fontSize: 14, fontWeight: 500, marginBottom: 14 },
+  noteList: { display: 'flex', flexDirection: 'column', gap: 2, overflowY: 'auto', flex: 1 },
+  noteItem: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6, padding: '12px 10px', borderRadius: 7, color: 'var(--ink)' },
+  noteItemActive: { background: 'var(--active-bg)' },
+  noteItemTitle: { fontSize: 14, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' },
+  iconGhostBtn: { background: 'none', border: 'none', padding: 4, display: 'flex', alignItems: 'center', borderRadius: 5, flexShrink: 0, color: 'var(--muted)' },
+  iconGhostBtnBig: { background: 'none', border: 'none', padding: 6, display: 'flex', alignItems: 'center', borderRadius: 7, flexShrink: 0, fontSize: 18 },
+  main: { flex: 1, display: 'flex', flexDirection: 'column', height: '100dvh', minWidth: 0 },
+  topBar: { display: 'flex', flexDirection: 'column', gap: 8, padding: '10px 12px', borderBottom: '1px solid var(--line)', flexShrink: 0 },
+  topBarRow: { display: 'flex', alignItems: 'center', gap: 4 },
+  titleInput: { fontFamily: "'Caveat', cursive", fontWeight: 700, fontSize: 24, color: 'var(--ink)', border: 'none', background: 'none', outline: 'none', flex: 1, minWidth: 0, padding: '0 4px' },
+  searchBar: { display: 'flex', alignItems: 'center', gap: 6, background: 'var(--bg)', border: '1px solid var(--line)', borderRadius: 8, padding: '8px 10px' },
+  searchInput: { border: 'none', outline: 'none', fontSize: 14.5, flex: 1, minWidth: 0, fontFamily: "'Inter', sans-serif", background: 'transparent', color: 'var(--ink)' },
+  matchCount: { fontSize: 12, color: 'var(--muted)', minWidth: 30, textAlign: 'center', flexShrink: 0 },
+  editorWrap: { position: 'relative', flex: 1, overflow: 'hidden' },
+  backdrop: { ...sharedTextStyle, position: 'absolute', inset: 0, overflow: 'auto', color: 'var(--ink)', pointerEvents: 'none' },
+  editor: { ...sharedTextStyle, position: 'absolute', inset: 0, width: '100%', height: '100%', resize: 'none', border: 'none', outline: 'none', background: 'transparent', color: 'transparent', overflow: 'auto' },
+  emptyState: { padding: 24, color: 'var(--muted)', fontSize: 14, display: 'flex', flexDirection: 'column', gap: 12 },
+};
+
+ReactDOM.createRoot(document.getElementById('root')).render(<Notebook />);
+</script>
+</body>
+  </html>
