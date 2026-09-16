@@ -1,0 +1,6 @@
+{
+  "appId": "com.mynotebook.app",
+  "appName": "My Notebook",
+  "webDir": "www",
+  "bundledWebRuntime": false
+}
